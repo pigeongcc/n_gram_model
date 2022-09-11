@@ -7,7 +7,7 @@
     3.
 
 """
-import sys
+import argparse
 import os
 import numpy as np
 import chardet
@@ -17,9 +17,8 @@ from sklearn.cluster import DBSCAN
 from sklearn import metrics
 
 
-def upload_corpus(corpus_root: str):
+def upload_corpus(input_path: str):
     data = ''
-
     def read_txt(filepath):
         with open(filepath, 'rb') as file:
             result = chardet.detect(file.read(100))
@@ -28,9 +27,9 @@ def upload_corpus(corpus_root: str):
         with open(filepath, 'r', encoding=encoding) as file:
             return file.read()
 
-    for file in os.listdir(corpus_root):
+    for file in os.listdir(input_path):
         if file.endswith(".txt"):
-            filepath = f"{corpus_root}/{file}"
+            filepath = f"{input_path}/{file}"
             data += read_txt(filepath) + '\n'
 
     return data
@@ -59,7 +58,7 @@ def remove_punctuation(data: str):
 
 
 def preprocess(data: str):
-    data = data.lower()  # converting to lowercase
+    data = data.lower()
     data = remove_punctuation(data)
     data = data.replace('ё', 'е')
 
@@ -89,7 +88,7 @@ def fill_p(p: np.ndarray, word_to_ind: dict, data: str, normalize=True):
         p[tuple(np.array(n_gram_ind).T)] += 1
     if normalize:
         # normalize by dividing values in Nth dimension by the number of (N-1)-gram occurrences
-        nm1_grams = [data[i: i + (N - 1)] for i in range(len(data) - (N ) + 1)]
+        nm1_grams = [data[i: i + (N - 1)] for i in range(len(data) - N + 1)]
         nm1_grams_dict = {}
         for nm1_gram in nm1_grams:
             nm1_gram_items = tuple(nm1_gram)
@@ -120,11 +119,8 @@ def fill_p(p: np.ndarray, word_to_ind: dict, data: str, normalize=True):
             p[ind_tuple] = quantize(prob_vec, [i for i in range(0, 255, 12)])
 
 
-def process_input(args):
-    corpus_root = args[1]
-    model_path = args[2]
-    N = int(args[3])  # N-gram model
-    return corpus_root, model_path, N
+def process_input():
+    return input_path, model_path, N
 
 
 def save_model(model_path: str, vars):
@@ -132,7 +128,7 @@ def save_model(model_path: str, vars):
         pickle.dump(vars, file_pkl)
 
 
-# dict narrowing the range of POS used
+# dict to narrow the range of POS used
 POS_TO_FEAT = {
     "NOUN": "POS_NOUN",
     "NPRO": "POS_NOUN",
@@ -173,7 +169,7 @@ FEAT_TO_IND = {
 
 
 def initialize_ml(num_of_examples: int):
-    df = [ [0 for _ in range(len(FEAT_TO_IND))] for _ in range(num_of_examples)]
+    df = [[0 for _ in range(len(FEAT_TO_IND))] for _ in range(num_of_examples)]
     return df
 
 
@@ -251,17 +247,16 @@ def fit_ml_model(data: str):
     words = list(get_words_set(data))
     df = initialize_ml(len(words))  # an old habit to call it df...
     fill_df(df, words)
-    # run clusterization algorithm
+    # run the clustering algorithm
     clusters = clusterize(df)
     # compute a matrix of clusters connection between each other using the text
     p_clusters = compute_probs_clusters(data, df, clusters)
     return df, p_clusters
 
 
-def fit(args):
-    corpus_root, model_path, N = process_input(args)
+def fit(input_path: str, model_path: str, N: int):
     # upload texts from the corpus into data variable
-    data = upload_corpus(corpus_root)
+    data = upload_corpus(input_path)
 
     # preprocess the text data
     data = preprocess(data)
@@ -274,13 +269,24 @@ def fit(args):
     words = get_words_set(data)
     p, word_to_ind = initialize_ngram(words, N)
 
+    # fill the matrix p with relative frequences
     fill_p(p, word_to_ind, data, True)
 
+    # fit ML model on the data
     df, p_clusters = fit_ml_model(data)
 
     save_model(model_path, [p, word_to_ind, df, WORD_TO_DF_IND, p_clusters])
 
 
 if __name__ == '__main__':
-    fit(sys.argv)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--input-dir', type=str)
+    parser.add_argument('--model', type=str)
+    parser.add_argument('--N', type=int, default=2)
+    args = parser.parse_args()
 
+    input_path = args.input_dir
+    model_path = args.model
+    N = args.N  # N parameter of N-gram model
+
+    fit(input_path, model_path, N)

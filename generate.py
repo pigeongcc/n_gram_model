@@ -1,48 +1,39 @@
-"""
-NOTES:
-    - log probabilities
-    - highest_prob=False parameter to decide whether we're composing random strings (fortune wheel), or best fit ones
-    - пунктуация и орфография?
-"""
-import sys
-
+import argparse
 import numpy as np
 import train
 import pickle
-
-
-def textify(data: list):
-    add_last_sent_end(data)
-    textify_tags(data)
-    text = ' '.join(data)   # join the words into one string
-    text = remove_ugly_spaces(text)
-    return text
-
-
-def add_last_sent_end(data: list[str]):
-    if data[len(data)-1] != '<s>':
-        data.append('<s>')
 
 
 tag_to_sign = {'<s>': '.'}
 tags_capitalize = ['<s>']
 
 
-def textify_tags(data: list[str]):
-    for i in range(len(data)):
-        if data[i] in tag_to_sign:
-            tag = data[i]
-            data[i] = tag_to_sign[tag]
+def textify(data: list):
+    def add_last_sent_end(data: list[str]):
+        if data[len(data) - 1] != '<s>':
+            data.append('<s>')
 
-            if tag in tags_capitalize and i != len(data)-1:
-                data[i+1] = data[i+1].capitalize()
+    def textify_tags(data: list[str]):
+        for i in range(len(data)):
+            if data[i] in tag_to_sign:
+                tag = data[i]
+                data[i] = tag_to_sign[tag]
 
-    return data
+                if tag in tags_capitalize and i != len(data) - 1:
+                    data[i + 1] = data[i + 1].capitalize()
 
+        return data
 
-def remove_ugly_spaces(text: str):
-    text = text.replace(' .', '.')
-    text = text.replace('  ', ' ')
+    def remove_ugly_spaces(text: str):
+        text = text.replace(' .', '.')
+        text = text.replace('  ', ' ')
+        return text
+
+    add_last_sent_end(data)
+    textify_tags(data)
+    data[0] = data[0].capitalize()
+    text = ' '.join(data)   # join the words into one string
+    text = remove_ugly_spaces(text)
     return text
 
 
@@ -54,13 +45,11 @@ def get_cluster(word: str):
     return df[word_to_df_ind.get(word, randword())][13]
 
 
-def choose_word(prob_vec, prev_word: str, rand_ctr: int, num_of_tries=10):
+def choose_word(prob_vec, prev_word: str, rand_ctr: int, num_of_tries=5):
     max_cluster_rate = -1
     chosen_word_p_ind = -1
 
     word_p_inds, rand_ctr_change = roulette_wheel(prob_vec, size=num_of_tries, replace=False)
-
-    print(word_p_inds)
     for word_p_ind in word_p_inds:
         word_cluster = get_cluster(ind_to_word[word_p_ind])
         prev_word_cluster = get_cluster(prev_word)
@@ -71,10 +60,7 @@ def choose_word(prob_vec, prev_word: str, rand_ctr: int, num_of_tries=10):
             chosen_word_p_ind = word_p_ind
             max_cluster_rate = word_cluster_rate
 
-        #print(f"checking {ind_to_word[word_p_ind]} ({word_cluster_rate})...")
-
     rand_ctr += rand_ctr_change
-    #print(f"chose {ind_to_word[chosen_word_p_ind]} ({max_cluster_rate})\n")
     return chosen_word_p_ind, rand_ctr
 
 
@@ -84,33 +70,22 @@ def roulette_wheel(prob_vec: np.array, size: int, replace: bool):
     try:
         return np.random.choice(len(prob_vec_f), p=prob_vec_f, size=size, replace=True), choice_is_random
     except ValueError as e:
-        print("~~~~~~~~~~~~~~~~~~~~~~~~~~`")
-        print(e)
-        print("~~~~~~~~~~~~~~~~~~~~~~~~~~`")
         choice_is_random = True
-        num_non_zero = np.count_nonzero(prob_vec_f)
-        #non_zero =
         return np.random.choice(len(prob_vec_f), size=size, replace=replace), choice_is_random
 
 
-def process_input(args):
-    model_path = args[1]
-    prefix_text = args[2]
-    gen_len = int(args[3])
-
+def read_model(model_path):
     global p, word_to_p_ind, df, word_to_df_ind, p_clusters
     with open(model_path, 'rb') as file_pkl:
         p, word_to_p_ind, df, word_to_df_ind, p_clusters = pickle.load(file_pkl)
-
-    return prefix_text, gen_len
 
 
 def randword():
     return word_to_p_ind[np.random.choice(list(word_to_p_ind.keys()))]
 
 
-def generate(args):
-    prefix_text, gen_len = process_input(args)
+def generate(model_path: str, prefix_text: str, gen_len: int):
+    read_model(model_path)
     N = p.ndim
 
     # preprocess start data
@@ -138,12 +113,20 @@ def generate(args):
 
         prefix_text.append(n_word)
 
-    print(' '.join(prefix_text))
-    print()
     gen_text = textify(prefix_text)
     print(gen_text)
-    print(f"randomly selected words counter is {rand_ctr}")
+    print(f"{rand_ctr} words were randomly selected")
 
 
 if __name__ == '__main__':
-    generate(sys.argv)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model', type=str)
+    parser.add_argument('--prefix', type=str)
+    parser.add_argument('--length', type=int)
+    args = parser.parse_args()
+
+    model_path = args.model
+    prefix_text = args.prefix
+    gen_len = args.length
+
+    generate(model_path, prefix_text, gen_len)
