@@ -12,7 +12,7 @@ import sys
 import os
 import numpy as np
 import chardet
-from generate import generate
+import pickle
 
 
 def upload_corpus(corpus_root: str):
@@ -20,7 +20,7 @@ def upload_corpus(corpus_root: str):
 
     def read_txt(filepath):
         with open(filepath, 'rb') as file:
-            result = chardet.detect(file.read(100000))
+            result = chardet.detect(file.read(100))
         encoding = result['encoding']
 
         with open(filepath, 'r', encoding=encoding) as file:
@@ -37,6 +37,12 @@ def upload_corpus(corpus_root: str):
 punctuation_none = "\"#$%',:;@`~”“《》«»’‘№§"  # punctuation signs to remove
 punctuation_space = "&()*+/<=>{|}[\]^_"  # punctuation signs to replace with spaces
 punctuation_tag_sentence = ".!?…"  # punctuation signs to replace with special tags
+tag_sent_end = '<s>'
+sign_to_tag = {'.': tag_sent_end,
+               '!': tag_sent_end,
+               '?': tag_sent_end,
+               '…': tag_sent_end
+               }
 
 
 def remove_punctuation(data: str):
@@ -44,9 +50,8 @@ def remove_punctuation(data: str):
         data = data.replace(sign, '')
     for sign in punctuation_space:
         data = data.replace(sign, ' ')
-    for sign in punctuation_tag_sentence:
-        tag = ' </s> <s>'  # sentence ended, new sentence began
-        data = data.replace(sign, tag)
+    for sign in sign_to_tag:
+        data = data.replace(sign, f' {sign_to_tag[sign]}')
 
     return data
 
@@ -59,23 +64,23 @@ def preprocess(data: str):
     return data
 
 
-def initialize_p_ind(words: set, N: int):
-    ind = {}
+def initialize(words: set, N: int):
+    word_to_ind = {}
     index = 0
     for word in words:
-        ind[word] = index
+        word_to_ind[word] = index
         index += 1
     if verbose:
-        print(ind)
+        print(word_to_ind)
 
-    p_shape = tuple(len(ind) for _ in range(N))  # dimensions of p
+    p_shape = tuple(len(word_to_ind) for _ in range(N))  # dimensions of p
     #p = np.zeros(p_shape)
     p = np.zeros(p_shape, dtype=np.uint8)
 
-    return p, ind
+    return p, word_to_ind
 
 
-def fill_p(p: np.ndarray, ind: dict, data: list[str], normalize=True):
+def fill_p(p: np.ndarray, word_to_ind: dict, data: list[str], normalize=True):
     """
     :param data: data.split(). A list of words ordered as in text source
     """
@@ -85,7 +90,7 @@ def fill_p(p: np.ndarray, ind: dict, data: list[str], normalize=True):
         print(f"n-grams:\n{n_grams}\n")
 
     for n_gram in n_grams:
-        n_gram_ind = [ind[word] for word in n_gram]
+        n_gram_ind = [word_to_ind[word] for word in n_gram]
         p[tuple(np.array(n_gram_ind).T)] += 1
         #print(f"~~~~~~~ added 1 to p at {n_gram_ind}")
         #print(f"p now:\n{p}\n")
@@ -125,8 +130,8 @@ def fill_p(p: np.ndarray, ind: dict, data: list[str], normalize=True):
             return prob_vec_int
 
         for words_tuple in nm1_grams_dict.keys():
-            ind_tuple = tuple(ind[word] for word in words_tuple)
-            #print(f"~~~~~~~ IND TUPLE: {ind_tuple}")
+            ind_tuple = tuple(word_to_ind[word] for word in words_tuple)
+            #print(f"~~~~~~~ word_to_ind TUPLE: {ind_tuple}")
             #print(f"~~ dividing  p[{ind_tuple}] by {nm1_grams_dict[words_tuple]} ...")
             #print(f"it was   {p[ind_tuple]}")
             #p[ind_tuple] /= nm1_grams_dict[words_tuple]
@@ -168,7 +173,7 @@ def fill_p(p: np.ndarray, ind: dict, data: list[str], normalize=True):
         """
 
 
-def train(args):
+def fit(args):
     # upload texts from the corpus into data variable
     corpus_root = args[1]
     data = upload_corpus(corpus_root)
@@ -184,27 +189,30 @@ def train(args):
 
     """
     initialize an N-dimensional array p to store probabilities with 0s.
-    ind{'word' : 0} is a dict containing pairs word-index for each word from the data.
+    word_to_ind{'word' : 0} is a dict containing pairs word-index for each word from the data.
     index is then used to access the word in array p
     """
     data_split = data.split()
     words = set(data_split)
-    N = int(args[2])  # N-gram model
-    p, ind = initialize_p_ind(words, N)
+    N = int(args[3])  # N-gram model
+    p, word_to_ind = initialize(words, N)
 
-    fill_p(p, ind, data_split, True)
+    fill_p(p, word_to_ind, data_split, True)
     if verbose:
         with np.printoptions(threshold=sys.maxsize):
-            print(f"~~~~~~~ p IS FILLED ~~~~~~~\np\n{p}\n\nind\n{ind}")
+            print(f"~~~~~~~ p IS FILLED ~~~~~~~\np\n{p}\n\nword_to_ind\n{word_to_ind}")
         print(f"p shape is {p.shape}\n~~~~~~~ GENERATOR ~~~~~~~\n")
 
-    return p, ind, data, N
+    model_path = args[2]
+    with open(model_path, 'wb') as file_pkl:
+        pickle.dump([p, word_to_ind], file_pkl)
 
 
 verbose = 0
 if __name__ == '__main__':
-    start_data = "для моделирования языка"
-    gen_ctr = 150
+    #start_data = "для моделирования языка"
+    #gen_len = 150
+    #choice_method = 'roulette_wheel'
 
-    p, ind, data, N = train(sys.argv)
-    generate(p, ind, start_data, N, gen_ctr)
+    fit(sys.argv)
+
