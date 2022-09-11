@@ -50,76 +50,91 @@ def reverse_dict(d: dict):
     return dict((v, k) for k, v in d.items())
 
 
-def choose_word(prob_vec, choice_method: str, rand_ctr: int):
-    if choice_method == 'roulette_wheel':
-        return roulette_wheel(prob_vec, rand_ctr)
-    elif choice_method == 'max_prob':
-        return max_prob(prob_vec, rand_ctr)
+def get_cluster(word: str):
+    return df[word_to_df_ind.get(word, randword())][13]
 
 
-def roulette_wheel(prob_vec, rand_ctr):
+def choose_word(prob_vec, prev_word: str, rand_ctr: int, num_of_tries=10):
+    max_cluster_rate = -1
+    chosen_word_p_ind = -1
+
+    word_p_inds, rand_ctr_change = roulette_wheel(prob_vec, size=num_of_tries, replace=False)
+
+    print(word_p_inds)
+    for word_p_ind in word_p_inds:
+        word_cluster = get_cluster(ind_to_word[word_p_ind])
+        prev_word_cluster = get_cluster(prev_word)
+
+        word_cluster_rate = p_clusters[word_cluster][prev_word_cluster]
+
+        if word_cluster_rate > max_cluster_rate:
+            chosen_word_p_ind = word_p_ind
+            max_cluster_rate = word_cluster_rate
+
+        #print(f"checking {ind_to_word[word_p_ind]} ({word_cluster_rate})...")
+
+    rand_ctr += rand_ctr_change
+    #print(f"chose {ind_to_word[chosen_word_p_ind]} ({max_cluster_rate})\n")
+    return chosen_word_p_ind, rand_ctr
+
+
+def roulette_wheel(prob_vec: np.array, size: int, replace: bool):
     prob_vec_f = np.array(prob_vec/sum(prob_vec))
-    print(prob_vec_f)
+    choice_is_random = False
     try:
-        return np.random.choice(len(prob_vec_f), p=prob_vec_f), rand_ctr
-    except ValueError:
-        rand_ctr += 1
-        return np.random.choice(len(prob_vec_f)), rand_ctr
+        return np.random.choice(len(prob_vec_f), p=prob_vec_f, size=size, replace=True), choice_is_random
+    except ValueError as e:
+        print("~~~~~~~~~~~~~~~~~~~~~~~~~~`")
+        print(e)
+        print("~~~~~~~~~~~~~~~~~~~~~~~~~~`")
+        choice_is_random = True
+        num_non_zero = np.count_nonzero(prob_vec_f)
+        #non_zero =
+        return np.random.choice(len(prob_vec_f), size=size, replace=replace), choice_is_random
 
-
-def max_prob(prob_vec, rand_ctr):
-    if np.sum(prob_vec) == 0:
-        rand_ctr += 1
-        return np.random.choice(len(prob_vec)), rand_ctr
-    return prob_vec.argmax(), rand_ctr
 
 def process_input(args):
     model_path = args[1]
     prefix_text = args[2]
     gen_len = int(args[3])
 
+    global p, word_to_p_ind, df, word_to_df_ind, p_clusters
     with open(model_path, 'rb') as file_pkl:
-        p, word_to_ind = pickle.load(file_pkl)
+        p, word_to_p_ind, df, word_to_df_ind, p_clusters = pickle.load(file_pkl)
 
-    return p, word_to_ind, prefix_text, gen_len
+    return prefix_text, gen_len
 
 
-#def generate(p: np.ndarray, word_to_ind: dict, prefix_text: str, gen_ctr: int, choice_method='roulette_wheel'):
-def generate(args, choice_method='roulette_wheel'):
-    p, word_to_ind, prefix_text, gen_len = process_input(args)
+def randword():
+    return word_to_p_ind[np.random.choice(list(word_to_p_ind.keys()))]
+
+
+def generate(args):
+    prefix_text, gen_len = process_input(args)
     N = p.ndim
 
     # preprocess start data
     prefix_text = train.preprocess(prefix_text)
     prefix_text = prefix_text.split()
 
-    print(prefix_text)
-
-    ind_to_word = reverse_dict(word_to_ind)
-
-    print(len(word_to_ind))
-    print(len(ind_to_word))
+    global ind_to_word
+    ind_to_word = reverse_dict(word_to_p_ind)
 
     rand_ctr = 0
     for _ in range(gen_len):
         nm1_gram = prefix_text[-(N-1):]
         nm1_gram_ind = []
         for word in nm1_gram:
-            if word in word_to_ind:
-                nm1_gram_ind.append(word_to_ind[word])
+            if word in word_to_p_ind:
+                nm1_gram_ind.append(word_to_p_ind.get(word, randword()))
             else:
                 nm1_gram_ind.append(np.random.choice(list(ind_to_word.keys())))
-        #print(f"nm1_gram: {nm1_gram}")
-        #print(f"nm1_gram_ind: {nm1_gram_ind}")
 
         nm1_gram_ind = tuple(np.array(nm1_gram_ind).T)      # coordiates of (N-1)-gram in p matrix
-        print(f"nm1_gram_ind: {nm1_gram_ind}")
         n_word_p_vec = p[nm1_gram_ind]   # vector of probabilities for Nth word
-        print(f"n_word_p_vec: {n_word_p_vec}")
-        n_word_ind, rand_ctr = choose_word(n_word_p_vec, choice_method, rand_ctr)
-        print(f"n_word_ind: {n_word_ind}")
+        nm1_word = nm1_gram[-1]
+        n_word_ind, rand_ctr = choose_word(n_word_p_vec, nm1_word, rand_ctr)
         n_word = ind_to_word[n_word_ind]
-        print(f"n_word_p: {n_word}")
 
         prefix_text.append(n_word)
 
@@ -127,7 +142,8 @@ def generate(args, choice_method='roulette_wheel'):
     print()
     gen_text = textify(prefix_text)
     print(gen_text)
-    print(rand_ctr)
+    print(f"randomly selected words counter is {rand_ctr}")
+
 
 if __name__ == '__main__':
     generate(sys.argv)

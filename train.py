@@ -7,12 +7,14 @@
     3.
 
 """
-
 import sys
 import os
 import numpy as np
 import chardet
 import pickle
+import pymorphy2
+from sklearn.cluster import DBSCAN
+from sklearn import metrics
 
 
 def upload_corpus(corpus_root: str):
@@ -64,38 +66,27 @@ def preprocess(data: str):
     return data
 
 
-def initialize(words: set, N: int):
+def initialize_ngram(words: set, N: int):
     word_to_ind = {}
     index = 0
     for word in words:
         word_to_ind[word] = index
         index += 1
-    if verbose:
-        print(word_to_ind)
 
     p_shape = tuple(len(word_to_ind) for _ in range(N))  # dimensions of p
-    #p = np.zeros(p_shape)
     p = np.zeros(p_shape, dtype=np.uint8)
 
     return p, word_to_ind
 
 
-def fill_p(p: np.ndarray, word_to_ind: dict, data: list[str], normalize=True):
-    """
-    :param data: data.split(). A list of words ordered as in text source
-    """
+def fill_p(p: np.ndarray, word_to_ind: dict, data: str, normalize=True):
     N = len(p.shape)
+    data = data.split()
     n_grams = [data[i: i + N] for i in range(len(data) - N + 1)]
-    if verbose:
-        print(f"n-grams:\n{n_grams}\n")
 
     for n_gram in n_grams:
         n_gram_ind = [word_to_ind[word] for word in n_gram]
         p[tuple(np.array(n_gram_ind).T)] += 1
-        #print(f"~~~~~~~ added 1 to p at {n_gram_ind}")
-        #print(f"p now:\n{p}\n")
-    if verbose:
-        print(f"~~~~~~~ p before normalization:\n{p}\n")
     if normalize:
         # normalize by dividing values in Nth dimension by the number of (N-1)-gram occurrences
         nm1_grams = [data[i: i + (N - 1)] for i in range(len(data) - (N ) + 1)]
@@ -106,13 +97,6 @@ def fill_p(p: np.ndarray, word_to_ind: dict, data: list[str], normalize=True):
                 nm1_grams_dict[nm1_gram_items] = 1
             else:
                 nm1_grams_dict[nm1_gram_items] += 1
-
-
-        num_n_grams = len(n_grams)
-        if verbose:
-            print(f"number of words in data is {len(data)}")
-            print(f"number of n_grams is {num_n_grams}")
-            print(f"number of nm1_grams is {len(nm1_grams)}\n")
 
         def quantize(prob_vec_f, quants):
             prob_vec_int = np.zeros(prob_vec_f.shape, dtype=np.uint8)
@@ -131,88 +115,172 @@ def fill_p(p: np.ndarray, word_to_ind: dict, data: list[str], normalize=True):
 
         for words_tuple in nm1_grams_dict.keys():
             ind_tuple = tuple(word_to_ind[word] for word in words_tuple)
-            #print(f"~~~~~~~ word_to_ind TUPLE: {ind_tuple}")
-            #print(f"~~ dividing  p[{ind_tuple}] by {nm1_grams_dict[words_tuple]} ...")
-            #print(f"it was   {p[ind_tuple]}")
-            #p[ind_tuple] /= nm1_grams_dict[words_tuple]
-            #print(f"now it's {p[ind_tuple]}\n")
 
             prob_vec = np.array(p[ind_tuple] * 255 / nm1_grams_dict[words_tuple])
             p[ind_tuple] = quantize(prob_vec, [i for i in range(0, 255, 12)])
-            """
-            print("QUANT:")
-            print(prob_vec)
-            print(p[ind_tuple])
-            """
 
-        if verbose:
-            print(f"nm1-grams:\n{nm1_grams}\n")
-            print(f"nm1-grams-ctr:\n{nm1_grams_dict}\n")
 
-        """
-        p_sums = p.sum(axis=0)
-        p = np.moveaxis(p, 1, 0)
-        p = np.array([p[i]/(p_sums[i] if p_sums[i] != 0 else 1) for i in range(len(p))])
-        p = np.moveaxis(p, 0, 1)
+def process_input(args):
+    corpus_root = args[1]
+    model_path = args[2]
+    N = int(args[3])  # N-gram model
+    return corpus_root, model_path, N
 
-        # p_sums = p.sum(axis=tuple(range(p.ndim - 1)))
-        #for i in range(p.shape[-1]):
-            #p_sum = p_sums[i]
-        #for p_sum in p_sums:
-        super_tpl = tuple(range(p.ndim))
-        print(f"~~~~~~~ super_tpl is {super_tpl}")
-        for super_ind in tuple(range(p.ndim - 1)):
-            p_sum = p_sums[super_ind]
-            if p_sum > 1:
-                axis = [_ for _ in range(p.ndim-1)]
-                #axis.append(i)
-                axis = tuple(np.array(axis).T)
-                p[super_ind] /= p_sum
-                print(f"~~~~~~~ divided by {p_sum} at {axis}")
-                print(f"p now:\n{p}\n")
-        """
+
+def save_model(model_path: str, vars):
+    with open(model_path, 'wb') as file_pkl:
+        pickle.dump(vars, file_pkl)
+
+
+# dict narrowing the range of POS used
+POS_TO_FEAT = {
+    "NOUN": "POS_NOUN",
+    "NPRO": "POS_NOUN",
+    "ADJF": "POS_ADJ",
+    "ADJS": "POS_ADJ",
+    "COMP": "POS_ADJ",
+    "PRTF": "POS_ADJ",
+    "PRTS": "POS_ADJ",
+    "VERB": "POS_VERB",
+    "GRND": "POS_VERB",
+    "INFN": "POS_INFN",
+    "NUMR": "POS_NUMR",
+    "ADVB": "POS_ADV",
+    "PRED": "POS_PRED",
+    "PREP": "POS_PREP",
+    "CONJ": "POS_CONJ",
+    "PRCL": "POS_PRCL",
+    "INTJ": "POS_INTJ",
+    "OTHER": "POS_OTHER"
+}
+# feature-to-index dict
+FEAT_TO_IND = {
+    "POS_NOUN": 0,
+    "POS_ADJ": 1,
+    "POS_VERB": 2,
+    "POS_NUMR": 3,
+    "POS_ADV": 4,
+    "POS_PRED": 5,
+    "POS_PREP": 6,
+    "POS_CONJ": 7,
+    "POS_PRCL": 8,
+    "POS_INTJ": 9,
+    "POS_INFN": 10,
+    "POS_OTHER": 11,
+    "NUMBER": 12,
+    "CLUSTER": 13
+}
+
+
+def initialize_ml(num_of_examples: int):
+    df = [ [0 for _ in range(len(FEAT_TO_IND))] for _ in range(num_of_examples)]
+    return df
+
+
+morph = pymorphy2.MorphAnalyzer()
+
+
+def parse(word: str):
+    parse_results = morph.parse(word)
+    if len(parse_results) == 0:
+        return None
+    return parse_results[0].tag
+
+
+WORD_TO_DF_IND = {}
+
+
+def fill_df(df: list, words: list):
+    for i in range(len(words)):
+        word = words[i]
+        WORD_TO_DF_IND[word] = i
+
+        tag = parse(word)
+
+        pos = tag.POS
+        pos_ind = FEAT_TO_IND[POS_TO_FEAT.get(pos, "POS_OTHER")]
+        df[i][pos_ind] = 1
+
+        number = tag.number
+        num_ind = FEAT_TO_IND["NUMBER"]
+        df[i][num_ind] = 0 if number == 'sing' else 1
+
+
+def clusterize(df: list):
+    db = DBSCAN().fit(df)
+    labels = db.labels_
+
+    # Number of clusters in labels, ignoring noise if present.
+    n_clusters_ = len(set(labels)) - (1 if -1 in labels else 0)
+    n_noise_ = list(labels).count(-1)
+
+    print("Estimated number of clusters: %d" % n_clusters_)
+    print("Estimated number of noise points: %d" % n_noise_)
+    print("Silhouette Coefficient: %0.3f" % metrics.silhouette_score(df, labels))
+
+    for i in range(len(df)):
+        df[i][FEAT_TO_IND["CLUSTER"]] = labels[i]
+
+    return set(labels)
+
+
+def compute_probs_clusters(data: str, df: list, clusters: set):
+    data = data.split()
+    num_of_clusters = len(clusters)
+    p_clusters = [[0 for _ in range(num_of_clusters)] for _ in range(num_of_clusters)]
+    for i in range(1, len(data)):
+        word = data[i]
+        word_prev = data[i-1]
+        try:
+            word_ind = WORD_TO_DF_IND[word]
+            word_prev_ind = WORD_TO_DF_IND[word_prev]
+        except KeyError:
+            continue
+        word_cluster = df[word_ind][FEAT_TO_IND["CLUSTER"]]
+        word_prev_cluster = df[word_prev_ind][FEAT_TO_IND["CLUSTER"]]
+        p_clusters[word_cluster][word_prev_cluster] += 1
+    return p_clusters
+
+
+def get_words_set(data: str):
+    return set(data.split())
+
+
+def fit_ml_model(data: str):
+    # fill the df (table) with the words features
+    words = list(get_words_set(data))
+    df = initialize_ml(len(words))  # an old habit to call it df...
+    fill_df(df, words)
+    # run clusterization algorithm
+    clusters = clusterize(df)
+    # compute a matrix of clusters connection between each other using the text
+    p_clusters = compute_probs_clusters(data, df, clusters)
+    return df, p_clusters
 
 
 def fit(args):
+    corpus_root, model_path, N = process_input(args)
     # upload texts from the corpus into data variable
-    corpus_root = args[1]
     data = upload_corpus(corpus_root)
-    #data = 'a b c b c'
-    #data = 'a b c b a c b a d'
-    if verbose:
-        print(f"~~~~~~~ CORPUS IS READ ~~~~~~~\n{data}")
 
     # preprocess the text data
     data = preprocess(data)
-    if verbose:
-        print(f"~~~~~~~ DATA IS PREPROCESSED ~~~~~~~\n{data}")
 
     """
     initialize an N-dimensional array p to store probabilities with 0s.
     word_to_ind{'word' : 0} is a dict containing pairs word-index for each word from the data.
     index is then used to access the word in array p
     """
-    data_split = data.split()
-    words = set(data_split)
-    N = int(args[3])  # N-gram model
-    p, word_to_ind = initialize(words, N)
+    words = get_words_set(data)
+    p, word_to_ind = initialize_ngram(words, N)
 
-    fill_p(p, word_to_ind, data_split, True)
-    if verbose:
-        with np.printoptions(threshold=sys.maxsize):
-            print(f"~~~~~~~ p IS FILLED ~~~~~~~\np\n{p}\n\nword_to_ind\n{word_to_ind}")
-        print(f"p shape is {p.shape}\n~~~~~~~ GENERATOR ~~~~~~~\n")
+    fill_p(p, word_to_ind, data, True)
 
-    model_path = args[2]
-    with open(model_path, 'wb') as file_pkl:
-        pickle.dump([p, word_to_ind], file_pkl)
+    df, p_clusters = fit_ml_model(data)
+
+    save_model(model_path, [p, word_to_ind, df, WORD_TO_DF_IND, p_clusters])
 
 
-verbose = 0
 if __name__ == '__main__':
-    #start_data = "для моделирования языка"
-    #gen_len = 150
-    #choice_method = 'roulette_wheel'
-
     fit(sys.argv)
 
